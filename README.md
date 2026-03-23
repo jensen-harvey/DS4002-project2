@@ -1,7 +1,6 @@
 # DS-4002-Project2: Tech Layoff Forecasting
 
 **Tech Employment in the Age of AI: Forecasting Global Monthly Tech Layoffs**  
-DS 4002 | Spring 2026 | University of Virginia  
 *Jensen Harvey · Kaitlyn Chou · Emily Friedman*
 
 ---
