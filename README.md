@@ -9,7 +9,7 @@
 
 This repository contains all components of our DS 4002 Project 2, in which we use global tech layoff data from 2020 to the present to forecast monthly tech layoffs through the remainder of 2026 and 2027.
 
-**Research Question:** Can monthly tech layoffs from 2020–2025 be reliably forecasted, and what do the temporal patterns reveal about the role of AI adoption in driving — and potentially sustaining — workforce reductions in the global technology sector?
+**Research Question:** Can monthly tech layoffs from 2020–2025 be reliably forecasted, and what do the temporal patterns reveal about the role of AI adoption in driving workforce reductions in the global technology sector?
 
 **Approach:** We build and evaluate a SARIMA time series model on aggregated monthly layoff counts, selected via `auto.arima` after exploratory data analysis confirmed non-stationarity (ADF p = 0.19), first-order differencing (d = 1), and Q1 seasonality (s = 12). Model success is defined as achieving RMSE below a seasonal naïve baseline on a 12-month held-out test set.
 
