@@ -1,0 +1,378 @@
+---
+title: "Tech Employment in the Age of AI: Milestone 2 EDA"
+subtitle: "We Came, We Saw, We Modelled"
+author: "Jensen Harvey (group leader), Kaitlyn Chou, and Emily Friedman"
+date: "DS 4002 | `r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: tango
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.width = 9, fig.height = 5, fig.align = "center")
+```
+
+------------------------------------------------------------------------
+
+## 1. Setup and Data Loading
+
+```{r load-libraries}
+library(tidyverse)
+library(lubridate)
+library(scales)
+library(forecast)
+library(tseries)
+library(zoo)
+library(ggplot2)
+library(patchwork)
+library(corrplot)
+```
+
+```{r load-data}
+
+df <- read_csv("/Users/jensen.harvey/Desktop/data science/project2/Tech_layoffs.csv")
+
+glimpse(df)
+head(df)
+```
+
+```{r data-cleaning}
+df <- df %>%
+  mutate(
+    YearMonth = floor_date(Date_layoffs, "month"),
+    Month = month(Date_layoffs, label = TRUE, abbr = TRUE),
+    Laid_Off = as.numeric(Laid_Off),
+    Percentage = as.numeric(Percentage)
+  ) %>%
+  filter(!is.na(Date_layoffs), !is.na(Laid_Off))
+
+cat("Date range:", as.character(min(df$Date_layoffs)), "to", as.character(max(df$Date_layoffs)), "\n")
+cat("Total records:", nrow(df), "\n")
+cat("Total employees laid off:", comma(sum(df$Laid_Off, na.rm = TRUE)), "\n")
+```
+
+------------------------------------------------------------------------
+
+## 2. Total Tech Layoffs Over Time (Monthly Aggregation)
+
+```{r layoffs-over-time}
+monthly_layoffs <- df %>%
+  group_by(YearMonth) %>%
+  summarise(Total_Laid_Off = sum(Laid_Off, na.rm = TRUE),
+            N_Companies = n_distinct(Company),
+            .groups = "drop") %>%
+  arrange(YearMonth)
+
+ggplot(monthly_layoffs, aes(x = YearMonth, y = Total_Laid_Off)) +
+  geom_col(fill = "#1B7A8C", alpha = 0.80) +
+  geom_line(color = "#d7191c", linewidth = 0.8) +
+  geom_smooth(method = "loess", se = TRUE, color = "#0D2B45", linetype = "dashed", linewidth = 0.7,
+              fill = "#A8D8E0", alpha = 0.25) +
+  scale_y_continuous(labels = comma) +
+  scale_x_date(date_breaks = "6 months", date_labels = "%b %Y") +
+  labs(
+    title = "Monthly Tech Layoffs (2020–Present)",
+    subtitle = "Bar = monthly total; Red line = raw trend; Dashed = LOESS smoother",
+    x = "Month", y = "Employees Laid Off"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r layoffs-annual}
+annual_layoffs <- df %>%
+  group_by(Year) %>%
+  summarise(Total_Laid_Off = sum(Laid_Off, na.rm = TRUE),
+            N_Companies = n_distinct(Company),
+            .groups = "drop")
+
+ggplot(annual_layoffs, aes(x = factor(Year), y = Total_Laid_Off, fill = factor(Year))) +
+  geom_col(show.legend = FALSE, alpha = 0.88) +
+  geom_text(aes(label = comma(Total_Laid_Off)), vjust = -0.4, size = 3.5) +
+  scale_y_continuous(labels = comma) +
+  scale_fill_manual(values = c(
+    "2020" = "#A8D8E0",
+    "2021" = "#6FC4D0",
+    "2022" = "#2AACBE",
+    "2023" = "#1B7A8C",
+    "2024" = "#135E6E",
+    "2025" = "#0D2B45"
+  )) +
+  labs(
+    title = "Annual Tech Layoffs by Year",
+    x = "Year", y = "Total Employees Laid Off"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+------------------------------------------------------------------------
+
+## 3. Time Series Decomposition
+
+```{r ts-decomposition}
+start_year  <- year(min(monthly_layoffs$YearMonth))
+start_month <- month(min(monthly_layoffs$YearMonth))
+
+layoffs_ts <- ts(monthly_layoffs$Total_Laid_Off,
+                 start = c(start_year, start_month),
+                 frequency = 12)
+
+layoffs_stl <- stl(layoffs_ts, s.window = "periodic", robust = TRUE)
+autoplot(layoffs_stl) +
+  labs(title = "STL Decomposition of Monthly Tech Layoffs",
+       subtitle = "Trend, Seasonal, and Remainder components") +
+  theme_minimal(base_size = 12)
+```
+
+------------------------------------------------------------------------
+
+## 4. Stationarity Testing (ADF Test) and Differencing
+
+```{r stationarity}
+adf_raw <- adf.test(layoffs_ts, alternative = "stationary")
+cat("ADF Test — Original Series\n")
+cat("Test Statistic:", round(adf_raw$statistic, 3), "\n")
+cat("p-value:", round(adf_raw$p.value, 4), "\n")
+cat("Conclusion:", ifelse(adf_raw$p.value < 0.05, "Stationary", "Non-stationary (differencing needed)"), "\n\n")
+
+layoffs_diff <- diff(layoffs_ts, differences = 1)
+adf_diff <- adf.test(layoffs_diff, alternative = "stationary")
+cat("ADF Test — After First Differencing\n")
+cat("Test Statistic:", round(adf_diff$statistic, 3), "\n")
+cat("p-value:", round(adf_diff$p.value, 4), "\n")
+cat("Conclusion:", ifelse(adf_diff$p.value < 0.05, "Stationary", "Still non-stationary"), "\n")
+```
+
+```{r plot-differencing}
+par(mfrow = c(2,1), mar = c(4,4,2,1))
+plot(layoffs_ts, main = "Original Series: Monthly Layoffs", ylab = "Layoffs", col = "#2c7bb6", lwd = 1.5)
+plot(layoffs_diff, main = "First-Differenced Series", ylab = "Differencing Layoffs", col = "#d7191c", lwd = 1.5)
+par(mfrow = c(1,1))
+```
+
+------------------------------------------------------------------------
+
+## 5. ACF and PACF Plots
+
+```{r acf-pacf}
+par(mfrow = c(2,2), mar = c(4,4,3,1))
+
+acf(layoffs_ts,  lag.max = 36, main = "ACF — Original Series")
+pacf(layoffs_ts, lag.max = 36, main = "PACF — Original Series")
+
+acf(layoffs_diff,  lag.max = 36, main = "ACF — Differenced Series")
+pacf(layoffs_diff, lag.max = 36, main = "PACF — Differenced Series")
+
+par(mfrow = c(1,1))
+```
+
+------------------------------------------------------------------------
+
+## 6. Distribution of Layoff Events (Company-Level)
+
+```{r layoff-distribution}
+p1 <- ggplot(df, aes(x = Laid_Off)) +
+  geom_histogram(bins = 60, fill = "#4575b4", color = "white", alpha = 0.8) +
+  scale_x_log10(labels = comma) +
+  labs(title = "Distribution of Layoffs per Event (log scale)",
+       x = "Employees Laid Off (log)", y = "Count") +
+  theme_minimal(base_size = 12)
+
+p2 <- ggplot(df, aes(x = Laid_Off)) +
+  geom_boxplot(fill = "#74add1", outlier.color = "#d7191c", outlier.alpha = 0.5) +
+  scale_x_log10(labels = comma) +
+  labs(title = "Boxplot of Layoff Size per Event (log scale)",
+       x = "Employees Laid Off (log)") +
+  theme_minimal(base_size = 12)
+
+p1 / p2
+```
+
+```{r top-events}
+df %>%
+  arrange(desc(Laid_Off)) %>%
+  select(Company, Date_layoffs, Laid_Off, Industry, Stage) %>%
+  head(15) %>%
+  rename(`Laid Off` = Laid_Off, Date = Date_layoffs) %>%
+  knitr::kable(caption = "Top 15 Largest Single Layoff Events")
+```
+
+------------------------------------------------------------------------
+
+## 7. Layoffs by Industry
+
+```{r industry-layoffs}
+industry_summary <- df %>%
+  filter(!is.na(Industry)) %>%
+  group_by(Industry) %>%
+  summarise(Total_Laid_Off = sum(Laid_Off, na.rm = TRUE),
+            N_Events = n(),
+            .groups = "drop") %>%
+  arrange(desc(Total_Laid_Off)) %>%
+  head(15)
+
+ggplot(industry_summary, aes(x = reorder(Industry, Total_Laid_Off), y = Total_Laid_Off, fill = Total_Laid_Off)) +
+  geom_col(show.legend = FALSE, alpha = 0.9) +
+  coord_flip() +
+  scale_y_continuous(labels = comma) +
+  scale_fill_gradient(low = "#abd9e9", high = "#2c7bb6") +
+  labs(
+    title = "Total Layoffs by Industry (Top 15)",
+    x = "Industry", y = "Total Employees Laid Off"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+```{r industry-over-time}
+top_industries <- industry_summary$Industry[1:6]
+
+df %>%
+  filter(Industry %in% top_industries) %>%
+  group_by(YearMonth, Industry) %>%
+  summarise(Total_Laid_Off = sum(Laid_Off, na.rm = TRUE), .groups = "drop") %>%
+  ggplot(aes(x = YearMonth, y = Total_Laid_Off, color = Industry)) +
+  geom_line(linewidth = 0.9, alpha = 0.85) +
+  scale_y_continuous(labels = comma) +
+  scale_x_date(date_breaks = "6 months", date_labels = "%b %Y") +
+  labs(
+    title = "Monthly Layoffs Over Time — Top 6 Industries",
+    x = "Month", y = "Employees Laid Off", color = "Industry"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "bottom")
+```
+
+------------------------------------------------------------------------
+
+## 8. Seasonality Analysis
+
+```{r seasonality-boxplot}
+df %>%
+  group_by(Year, Month) %>%
+  summarise(Total_Laid_Off = sum(Laid_Off, na.rm = TRUE), .groups = "drop") %>%
+  ggplot(aes(x = Month, y = Total_Laid_Off, fill = Month)) +
+  geom_boxplot(show.legend = FALSE, alpha = 0.8, outlier.color = "#d7191c") +
+  scale_y_continuous(labels = comma) +
+  scale_fill_brewer(palette = "Set3") +
+  labs(
+    title = "Distribution of Monthly Layoffs by Calendar Month",
+    subtitle = "Boxplot across all years — reveals seasonal patterns",
+    x = "Month", y = "Total Layoffs"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+```{r seasonal-heatmap}
+monthly_layoffs %>%
+  mutate(Year = year(YearMonth), Month = month(YearMonth, label = TRUE)) %>%
+  ggplot(aes(x = Month, y = factor(Year), fill = Total_Laid_Off)) +
+  geom_tile(color = "white", linewidth = 0.4) +
+  scale_fill_gradient(low = "#EAF4F7", high = "#0D2B45", labels = comma) +
+  labs(
+    title = "Heatmap of Monthly Layoffs by Year",
+    subtitle = "Darker = more layoffs",
+    x = "Month", y = "Year", fill = "Layoffs"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+------------------------------------------------------------------------
+
+## 9. Geographic Distribution of Layoffs
+
+```{r geo-country}
+df %>%
+  filter(!is.na(Country)) %>%
+  group_by(Country) %>%
+  summarise(Total_Laid_Off = sum(Laid_Off, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(Total_Laid_Off)) %>%
+  head(12) %>%
+  ggplot(aes(x = reorder(Country, Total_Laid_Off), y = Total_Laid_Off, fill = Total_Laid_Off)) +
+  geom_col(show.legend = FALSE, alpha = 0.9) +
+  coord_flip() +
+  scale_y_continuous(labels = comma) +
+  scale_fill_gradient(low = "#abd9e9", high = "#2c7bb6") +
+  labs(title = "Total Layoffs by Country (Top 12)",
+       x = "Country", y = "Employees Laid Off") +
+  theme_minimal(base_size = 12)
+```
+
+```{r geo-usstate}
+df %>%
+  filter(Country == "USA", !is.na(USState)) %>%
+  group_by(USState) %>%
+  summarise(Total_Laid_Off = sum(Laid_Off, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(Total_Laid_Off)) %>%
+  head(12) %>%
+  ggplot(aes(x = reorder(USState, Total_Laid_Off), y = Total_Laid_Off, fill = Total_Laid_Off)) +
+  geom_col(show.legend = FALSE, alpha = 0.9) +
+  coord_flip() +
+  scale_y_continuous(labels = comma) +
+  scale_fill_gradient(low = "#abd9e9", high = "#2c7bb6") +
+  labs(title = "Total US Layoffs by State (Top 12)",
+       x = "State", y = "Employees Laid Off") +
+  theme_minimal(base_size = 12)
+```
+
+------------------------------------------------------------------------
+
+## 10. Layoffs by Company Stage
+
+```{r stage-analysis}
+df %>%
+  filter(!is.na(Stage)) %>%
+  group_by(Stage) %>%
+  summarise(Total_Laid_Off = sum(Laid_Off, na.rm = TRUE),
+            Median_Pct = median(Percentage, na.rm = TRUE),
+            N_Events = n(),
+            .groups = "drop") %>%
+  arrange(desc(Total_Laid_Off)) %>%
+  ggplot(aes(x = reorder(Stage, Total_Laid_Off), y = Total_Laid_Off, fill = Median_Pct)) +
+  geom_col(alpha = 0.9) +
+  coord_flip() +
+  scale_y_continuous(labels = comma) +
+  scale_fill_gradient(low = "#e0f3f8", high = "#d73027", name = "Median\nLayoff %") +
+  labs(
+    title = "Layoffs by Company Stage",
+    subtitle = "Fill = median percentage of workforce laid off",
+    x = "Stage", y = "Total Employees Laid Off"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+------------------------------------------------------------------------
+
+## 11. Percentage of Workforce Laid Off Over Time
+
+```{r pct-over-time}
+df %>%
+  filter(!is.na(Percentage)) %>%
+  group_by(YearMonth) %>%
+  summarise(
+    Avg_Pct = mean(Percentage, na.rm = TRUE),
+    Med_Pct = median(Percentage, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_longer(cols = c(Avg_Pct, Med_Pct), names_to = "Metric", values_to = "Value") %>%
+  ggplot(aes(x = YearMonth, y = Value, color = Metric)) +
+  geom_line(linewidth = 1) +
+  geom_smooth(method = "loess", se = FALSE, linetype = "dashed", linewidth = 0.7) +
+  scale_x_date(date_breaks = "6 months", date_labels = "%b %Y") +
+  scale_color_manual(values = c("Avg_Pct" = "#d7191c", "Med_Pct" = "#2c7bb6"),
+                     labels = c("Mean %", "Median %")) +
+  labs(
+    title = "Average & Median % of Workforce Laid Off per Month",
+    x = "Month", y = "% of Workforce", color = NULL
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "bottom")
+```
