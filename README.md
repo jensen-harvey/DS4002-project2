@@ -1,7 +1,7 @@
 # DS-4002-Project2: Tech Layoff Forecasting
 
 **Tech Employment in the Age of AI: Forecasting Global Monthly Tech Layoffs**  
-*Jensen Harvey · Kaitlyn Chou · Emily Friedman*
+*Jensen Harvey(group leader) · Kaitlyn Chou · Emily Friedman*
 
 ---
 
