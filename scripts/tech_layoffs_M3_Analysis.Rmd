@@ -1,0 +1,595 @@
+---
+title: "Tech Employment in the Age of AI: Milestone 3 Time Series Analysis"
+subtitle: "We Came, We Saw, We Modelled"
+author: "Jensen Harvey (group leader), Kaitlyn Chou, and Emily Friedman"
+date: "DS 4002 | `r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    theme: flatly
+    highlight: tango
+    df_print: paged
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.width = 9, fig.height = 5, fig.align = "center")
+```
+
+------------------------------------------------------------------------
+
+# Setup and Data Loading
+
+```{r load-libraries}
+library(tidyverse)
+library(lubridate)
+library(scales)
+library(forecast)
+library(tseries)
+library(zoo)
+library(ggplot2)
+library(patchwork)
+library(knitr)
+library(kableExtra)
+```
+
+```{r load-data}
+df <- read_csv("/Users/jensen.harvey/Desktop/data science/project2/Tech_layoffs.csv")
+
+glimpse(df)
+```
+
+```{r data-cleaning}
+df <- df %>%
+  mutate(
+    YearMonth   = floor_date(Date_layoffs, "month"),
+    Month       = month(Date_layoffs, label = TRUE, abbr = TRUE),
+    Laid_Off    = as.numeric(Laid_Off),
+    Percentage  = as.numeric(Percentage)
+  ) %>%
+  filter(!is.na(Date_layoffs), !is.na(Laid_Off))
+
+cat("Date range:", as.character(min(df$Date_layoffs)), "to",
+    as.character(max(df$Date_layoffs)), "\n")
+cat("Total records:", nrow(df), "\n")
+cat("Total employees laid off:", comma(sum(df$Laid_Off, na.rm = TRUE)), "\n")
+```
+
+------------------------------------------------------------------------
+
+# Time Series Construction and Train/Test Split
+
+## Monthly Aggregation
+
+```{r monthly-agg}
+monthly_layoffs <- df %>%
+  group_by(YearMonth) %>%
+  summarise(Total_Laid_Off = sum(Laid_Off, na.rm = TRUE), .groups = "drop") %>%
+  arrange(YearMonth)
+
+cat("Monthly observations:", nrow(monthly_layoffs), "\n")
+cat("Range:", as.character(min(monthly_layoffs$YearMonth)),
+    "to", as.character(max(monthly_layoffs$YearMonth)), "\n")
+```
+
+## Convert to `ts` Object
+
+```{r ts-object}
+start_year  <- year(min(monthly_layoffs$YearMonth))
+start_month <- month(min(monthly_layoffs$YearMonth))
+
+layoffs_ts <- ts(monthly_layoffs$Total_Laid_Off,
+                 start     = c(start_year, start_month),
+                 frequency = 12)
+
+cat("ts object: start =", tsp(layoffs_ts)[1],
+    "| end =", tsp(layoffs_ts)[2],
+    "| length =", length(layoffs_ts), "\n")
+```
+
+## Train / Test Split
+
+```{r train-test-split}
+train_ts <- window(layoffs_ts, end = c(2024, 12))
+
+test_ts  <- window(layoffs_ts, start = c(2025,  1), end = c(2025, 12))
+
+cat("Training observations:", length(train_ts), "\n")
+cat("Test observations:    ", length(test_ts),  "\n")
+```
+
+```{r train-test-plot}
+autoplot(layoffs_ts) +
+  autolayer(train_ts, series = "Training (2020–2024)", color = "#1B7A8C", linewidth = 0.9) +
+  autolayer(test_ts,  series = "Test (2025)",          color = "#d7191c", linewidth = 0.9) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title    = "Monthly Tech Layoffs — Training vs. Test Split",
+    subtitle = "Training: Mar 2020–Dec 2024 | Test: Jan–Dec 2025",
+    x = "Date", y = "Employees Laid Off", color = NULL
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "bottom")
+```
+
+------------------------------------------------------------------------
+
+# Stationarity Confirmation
+
+```{r stationarity-tests}
+adf_train <- adf.test(train_ts, alternative = "stationary")
+cat("ADF Test — Training Series (original)\n")
+cat("  Statistic:", round(adf_train$statistic, 3),
+    " | p-value:", round(adf_train$p.value, 4), "\n")
+cat("  Conclusion:", ifelse(adf_train$p.value < 0.05, "Stationary", "Non-stationary"), "\n\n")
+
+train_diff <- diff(train_ts, differences = 1)
+adf_diff   <- adf.test(train_diff, alternative = "stationary")
+cat("ADF Test — Training Series (first-differenced)\n")
+cat("  Statistic:", round(adf_diff$statistic, 3),
+    " | p-value:", round(adf_diff$p.value, 4), "\n")
+cat("  Conclusion:", ifelse(adf_diff$p.value < 0.05, "Stationary", "Still non-stationary"), "\n")
+```
+
+------------------------------------------------------------------------
+
+# ACF and PACF Plots 
+
+```{r acf-pacf, fig.height=6}
+par(mfrow = c(2, 2), mar = c(4, 4, 3, 1))
+acf(train_ts,   lag.max = 36, main = "ACF — Original Training Series")
+pacf(train_ts,  lag.max = 36, main = "PACF — Original Training Series")
+acf(train_diff, lag.max = 36, main = "ACF — First-Differenced Series")
+pacf(train_diff, lag.max = 36, main = "PACF — First-Differenced Series")
+par(mfrow = c(1, 1))
+```
+
+------------------------------------------------------------------------
+
+# 2023 Q1 Structural Break
+
+```{r xreg-construction}
+all_dates <- seq(as.Date("2020-03-01"), by = "month",
+                 length.out = length(layoffs_ts))
+
+xreg_full <- as.numeric(
+  all_dates >= as.Date("2023-01-01") & all_dates <= as.Date("2023-03-01")
+)
+
+n_train <- length(train_ts)
+xreg_train <- xreg_full[1:n_train]
+xreg_test  <- xreg_full[(n_train + 1):(n_train + length(test_ts))]
+
+cat("Break indicator in training (sum = months flagged):", sum(xreg_train), "\n")
+cat("Break indicator in test (should be 0):", sum(xreg_test), "\n")
+```
+
+------------------------------------------------------------------------
+
+# Model Fitting
+
+## Seasonal Naive Baseline
+
+```{r snaive-baseline}
+h_test      <- length(test_ts)  
+snaive_fit  <- snaive(train_ts, h = h_test)
+snaive_rmse <- sqrt(mean((snaive_fit$mean - test_ts)^2))
+cat("Seasonal Naive RMSE:", round(snaive_rmse, 2), "\n")
+```
+
+## auto.arima
+
+```{r auto-arima}
+set.seed(2002)
+model_auto <- auto.arima(
+  train_ts,
+  stepwise      = FALSE,
+  approximation = FALSE,
+  seasonal      = TRUE,
+  ic            = "aicc",
+  trace         = FALSE
+)
+
+summary(model_auto)
+```
+
+## SARIMA(1,1,1)(1,1,0)[12] 
+
+```{r sarima-candidate}
+model_sarima <- Arima(
+  train_ts,
+  order          = c(1, 1, 1),
+  seasonal       = list(order = c(1, 1, 0), period = 12)
+)
+
+summary(model_sarima)
+```
+
+##  ARIMA(2,1,1) 
+
+```{r arima-candidate}
+model_arima211 <- Arima(
+  train_ts,
+  order = c(2, 1, 1)
+)
+
+summary(model_arima211)
+```
+
+## SARIMAX auto.arima
+
+```{r sarimax}
+set.seed(2002)
+model_sarimax <- auto.arima(
+  train_ts,
+  xreg          = xreg_train,
+  stepwise      = FALSE,
+  approximation = FALSE,
+  seasonal      = TRUE,
+  ic            = "aicc",
+  trace         = FALSE
+)
+
+summary(model_sarimax)
+```
+
+------------------------------------------------------------------------
+
+# AIC / BIC Comparison
+
+```{r model-comparison-table}
+model_names <- c(
+  "auto.arima (no xreg)",
+  "SARIMA(1,1,1)(1,1,0)[12]",
+  "ARIMA(2,1,1)",
+  "SARIMAX (auto + break_2023)"
+)
+
+model_list <- list(model_auto, model_sarima, model_arima211, model_sarimax)
+
+info_table <- tibble(
+  Model  = model_names,
+  AIC    = sapply(model_list, AIC),
+  AICc   = sapply(model_list, function(m) m$aicc),
+  BIC    = sapply(model_list, BIC),
+  `Log-Lik` = sapply(model_list, logLik) %>% as.numeric()
+) %>%
+  arrange(AICc)
+
+kable(info_table, digits = 2, caption = "Model Information Criteria Comparison") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) %>%
+  row_spec(1, bold = TRUE, background = "#d4edda")
+```
+
+------------------------------------------------------------------------
+
+# Residual Diagnostics
+
+```{r residuals-auto, fig.height=6}
+checkresiduals(model_auto)
+```
+
+```{r ljung-box-auto}
+lb_auto <- Box.test(residuals(model_auto), lag = 12, type = "Ljung-Box", fitdf = length(coef(model_auto)))
+cat("Ljung-Box Test (auto.arima)\n")
+cat("  Chi-squared:", round(lb_auto$statistic, 3), " | df:", lb_auto$parameter,
+    " | p-value:", round(lb_auto$p.value, 4), "\n")
+cat("  Conclusion:", ifelse(lb_auto$p.value > 0.05,
+                            "Residuals are white noise (good)",
+                            "Significant autocorrelation remains in residuals"), "\n")
+```
+
+## SARIMAX Model
+
+```{r residuals-sarimax, fig.height=6}
+checkresiduals(model_sarimax)
+```
+
+```{r ljung-box-sarimax}
+lb_sarimax <- Box.test(residuals(model_sarimax), lag = 12, type = "Ljung-Box",
+                       fitdf = length(coef(model_sarimax)))
+cat("Ljung-Box Test (SARIMAX)\n")
+cat("  Chi-squared:", round(lb_sarimax$statistic, 3), " | df:", lb_sarimax$parameter,
+    " | p-value:", round(lb_sarimax$p.value, 4), "\n")
+cat("  Conclusion:", ifelse(lb_sarimax$p.value > 0.05,
+                            "Residuals are white noise (good)",
+                            "Significant autocorrelation remains in residuals"), "\n")
+```
+
+------------------------------------------------------------------------
+
+# Evaluation on Test Set
+
+```{r forecasts}
+fc_snaive   <- forecast(snaive_fit,    h = h_test)
+fc_auto     <- forecast(model_auto,    h = h_test)
+fc_sarima   <- forecast(model_sarima,  h = h_test)
+fc_arima211 <- forecast(model_arima211, h = h_test)
+fc_sarimax  <- forecast(model_sarimax, h = h_test, xreg = xreg_test)
+```
+
+```{r rmse-comparison}
+rmse <- function(actual, predicted) sqrt(mean((actual - predicted)^2))
+mae  <- function(actual, predicted) mean(abs(actual - predicted))
+mape <- function(actual, predicted) mean(abs((actual - predicted) / actual)) * 100
+
+eval_table <- tibble(
+  Model = c(
+    "Seasonal Naive (Baseline)",
+    "auto.arima (no xreg)",
+    "SARIMA(1,1,1)(1,1,0)[12]",
+    "ARIMA(2,1,1)",
+    "SARIMAX (auto + break_2023)"
+  ),
+  RMSE = c(
+    rmse(test_ts, fc_snaive$mean),
+    rmse(test_ts, fc_auto$mean),
+    rmse(test_ts, fc_sarima$mean),
+    rmse(test_ts, fc_arima211$mean),
+    rmse(test_ts, fc_sarimax$mean)
+  ),
+  MAE = c(
+    mae(test_ts, fc_snaive$mean),
+    mae(test_ts, fc_auto$mean),
+    mae(test_ts, fc_sarima$mean),
+    mae(test_ts, fc_arima211$mean),
+    mae(test_ts, fc_sarimax$mean)
+  ),
+  MAPE = c(
+    mape(test_ts, fc_snaive$mean),
+    mape(test_ts, fc_auto$mean),
+    mape(test_ts, fc_sarima$mean),
+    mape(test_ts, fc_arima211$mean),
+    mape(test_ts, fc_sarimax$mean)
+  )
+) %>%
+  arrange(RMSE)
+
+kable(eval_table, digits = 2,
+      caption = "Out-of-Sample Forecast Accuracy on Test Set (Jan–Dec 2025)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) %>%
+  row_spec(1, bold = TRUE, background = "#d4edda") %>%
+  row_spec(which(eval_table$Model == "Seasonal Naive (Baseline)"),
+           bold = FALSE, background = "#fff3cd")
+```
+
+```{r goal-check}
+best_rmse    <- min(eval_table$RMSE[eval_table$Model != "Seasonal Naive (Baseline)"])
+baseline_rmse <- eval_table$RMSE[eval_table$Model == "Seasonal Naive (Baseline)"]
+best_model   <- eval_table$Model[eval_table$RMSE == best_rmse]
+
+cat("=== QUANTIFIABLE GOAL CHECK ===\n")
+cat("Seasonal Naive RMSE:", round(baseline_rmse, 2), "\n")
+cat("Best model RMSE:    ", round(best_rmse,    2), "(", best_model, ")\n")
+cat("Goal achieved:      ",
+    ifelse(best_rmse < baseline_rmse, "YES — Beat the baseline!", "NO — Did not beat baseline."), "\n")
+```
+
+## Forecast vs. Actuals Plot
+
+```{r forecast-vs-actual-plot}
+test_dates <- seq(as.Date("2025-01-01"), by = "month", length.out = h_test)
+
+fc_df <- tibble(
+  Date    = test_dates,
+  Actual  = as.numeric(test_ts),
+  `Seasonal Naive`            = as.numeric(fc_snaive$mean)[1:h_test],
+  `auto.arima`                = as.numeric(fc_auto$mean)[1:h_test],
+  `SARIMA(1,1,1)(1,1,0)[12]` = as.numeric(fc_sarima$mean)[1:h_test],
+  `ARIMA(2,1,1)`              = as.numeric(fc_arima211$mean)[1:h_test],
+  `SARIMAX`                   = as.numeric(fc_sarimax$mean)[1:h_test]
+) %>%
+  pivot_longer(-Date, names_to = "Series", values_to = "Layoffs")
+
+ggplot(fc_df, aes(x = Date, y = Layoffs, color = Series, linetype = Series)) +
+  geom_line(linewidth = 0.9) +
+  geom_point(data = filter(fc_df, Series == "Actual"), size = 2.5) +
+  scale_y_continuous(labels = comma) +
+  scale_x_date(date_breaks = "2 months", date_labels = "%b %Y") +
+  scale_color_manual(values = c(
+    "Actual"                   = "#000000",
+    "Seasonal Naive"           = "#bdbdbd",
+    "auto.arima"               = "#1B7A8C",
+    "SARIMA(1,1,1)(1,1,0)[12]"= "#2AACBE",
+    "ARIMA(2,1,1)"             = "#6FC4D0",
+    "SARIMAX"                  = "#d7191c"
+  )) +
+  scale_linetype_manual(values = c(
+    "Actual"                   = "solid",
+    "Seasonal Naive"           = "dotted",
+    "auto.arima"               = "solid",
+    "SARIMA(1,1,1)(1,1,0)[12]"= "dashed",
+    "ARIMA(2,1,1)"             = "dashed",
+    "SARIMAX"                  = "solid"
+  )) +
+  labs(
+    title    = "Forecast vs. Actual Monthly Layoffs — Test Period (Jan–Dec 2025)",
+    subtitle = "Black dots = observed values",
+    x = "Month", y = "Employees Laid Off", color = NULL, linetype = NULL
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+------------------------------------------------------------------------
+
+# CrossnValidation 
+
+```{r tscv, cache=TRUE}
+fc_auto_fn <- function(y, h) {
+  forecast(auto.arima(y, stepwise = TRUE, approximation = TRUE, seasonal = TRUE), h = h)
+}
+
+fc_snaive_fn <- function(y, h) snaive(y, h = h)
+
+cv_auto   <- tsCV(train_ts, fc_auto_fn,   h = 12, initial = 36)
+cv_snaive <- tsCV(train_ts, fc_snaive_fn, h = 12, initial = 36)
+
+cv_rmse_auto   <- sqrt(colMeans(cv_auto^2,   na.rm = TRUE))
+cv_rmse_snaive <- sqrt(colMeans(cv_snaive^2, na.rm = TRUE))
+
+cv_plot_df <- tibble(
+  Horizon      = 1:12,
+  `auto.arima` = cv_rmse_auto,
+  `Seasonal Naive` = cv_rmse_snaive
+) %>%
+  pivot_longer(-Horizon, names_to = "Model", values_to = "RMSE")
+
+ggplot(cv_plot_df, aes(x = Horizon, y = RMSE, color = Model)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2.5) +
+  scale_color_manual(values = c("auto.arima" = "#1B7A8C", "Seasonal Naive" = "#bdbdbd")) +
+  labs(
+    title    = "Time Series Cross-Validation: RMSE by Forecast Horizon",
+    subtitle = "Rolling origin, initial window = 36 months",
+    x = "Forecast Horizon (months ahead)", y = "RMSE", color = NULL
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "bottom")
+
+cat("Mean CV RMSE — auto.arima:    ", round(mean(cv_rmse_auto,   na.rm = TRUE), 2), "\n")
+cat("Mean CV RMSE — Seasonal Naive:", round(mean(cv_rmse_snaive, na.rm = TRUE), 2), "\n")
+```
+
+------------------------------------------------------------------------
+
+```{r best-model-summary}
+
+best_model_obj <- switch(
+  best_model,
+  "auto.arima (no xreg)"        = model_auto,
+  "SARIMA(1,1,1)(1,1,0)[12]"    = model_sarima,
+  "ARIMA(2,1,1)"                = model_arima211,
+  "SARIMAX (auto + break_2023)" = model_sarimax,
+  model_auto  # fallback
+)
+
+cat("=== BEST MODEL ===\n")
+print(best_model_obj)
+```
+
+------------------------------------------------------------------------
+
+# Forecast: 2026--2027
+
+```{r refit-full}
+full_xreg <- rep(0, length(layoffs_ts))  
+
+model_final <- auto.arima(
+  layoffs_ts,
+  stepwise      = FALSE,
+  approximation = FALSE,
+  seasonal      = TRUE,
+  ic            = "aicc",
+  trace         = FALSE
+)
+
+cat("Final model (fit on full data):\n")
+print(model_final)
+```
+
+```{r forecast-2026-2027}
+h_future <- 24  
+fc_final  <- forecast(model_final, h = h_future, level = c(80, 95))
+
+forecast_dates <- seq(as.Date("2026-01-01"), by = "month", length.out = h_future)
+
+fc_future_df <- tibble(
+  Date     = forecast_dates,
+  Forecast = as.numeric(fc_final$mean),
+  Lo80     = as.numeric(fc_final$lower[, 1]),
+  Hi80     = as.numeric(fc_final$upper[, 1]),
+  Lo95     = as.numeric(fc_final$lower[, 2]),
+  Hi95     = as.numeric(fc_final$upper[, 2])
+)
+
+hist_df <- tibble(
+  Date    = monthly_layoffs$YearMonth,
+  Layoffs = monthly_layoffs$Total_Laid_Off
+)
+```
+
+```{r forecast-plot, fig.height=6}
+ggplot() +
+ 
+  geom_col(data = hist_df, aes(x = Date, y = Layoffs),
+           fill = "#1B7A8C", alpha = 0.55, width = 25) +
+  
+  geom_ribbon(data = fc_future_df,
+              aes(x = Date, ymin = Lo95, ymax = Hi95),
+              fill = "#d7191c", alpha = 0.12) +
+  
+  geom_ribbon(data = fc_future_df,
+              aes(x = Date, ymin = Lo80, ymax = Hi80),
+              fill = "#d7191c", alpha = 0.22) +
+ 
+  geom_line(data = fc_future_df,
+            aes(x = Date, y = Forecast),
+            color = "#d7191c", linewidth = 1.1) +
+  geom_point(data = fc_future_df,
+             aes(x = Date, y = Forecast),
+             color = "#d7191c", size = 2) +
+  
+  geom_vline(xintercept = as.Date("2026-01-01"),
+             linetype = "dashed", color = "#555555", linewidth = 0.7) +
+  annotate("text", x = as.Date("2026-01-01"), y = max(hist_df$Layoffs) * 0.92,
+           label = "Forecast Start\nJan 2026", hjust = -0.08,
+           size = 3.5, color = "#555555") +
+  scale_y_continuous(labels = comma) +
+  scale_x_date(date_breaks = "6 months", date_labels = "%b %Y") +
+  labs(
+    title    = "Monthly Tech Layoffs: Historical Trend and 24-Month Forecast (2026–2027)",
+    subtitle = paste0("Model: ", model_final$arma |> paste(collapse=","),
+                      " | Red line = point forecast | Shading = 80% and 95% prediction intervals"),
+    x = "Date", y = "Employees Laid Off",
+    caption = "Source: layoffs.fyi | DS 4002 Spring 2026"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Forecast Table
+
+```{r forecast-table}
+fc_future_df %>%
+  mutate(
+    Year  = year(Date),
+    Month = month(Date, label = TRUE)
+  ) %>%
+  select(Year, Month, Forecast, Lo80, Hi80, Lo95, Hi95) %>%
+  mutate(across(Forecast:Hi95, ~ comma(round(.x)))) %>%
+  kable(caption = "24-Month Forecast: Monthly Tech Layoffs (Jan 2026 – Dec 2027)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+------------------------------------------------------------------------
+
+```{r results-summary, echo=FALSE}
+results <- tibble::tribble(
+  ~Metric,                            ~Value,
+  "Training period",                  "Mar 2020 – Dec 2024",
+  "Test period",                      "Jan 2025 – Aug 2025",
+  "Forecast horizon",                 "Jan 2026 – Dec 2027 (24 months)",
+  "Seasonal naive RMSE (baseline)",   comma(round(baseline_rmse, 0)),
+  paste0("Best model RMSE (", best_model, ")"), comma(round(best_rmse, 0)),
+  "Goal achieved (beat baseline)?",   ifelse(best_rmse < baseline_rmse, "YES", "NO"),
+  "ADF p-value (original series)",    as.character(round(adf_train$p.value, 4)),
+  "ADF p-value (differenced series)", as.character(round(adf_diff$p.value, 4)),
+  "Ljung-Box p-value (best model)",   as.character(round(lb_auto$p.value, 4))
+)
+
+kable(results, col.names = c("Item", "Result"),
+      caption = "Summary of Modeling Results") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
