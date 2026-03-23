@@ -67,7 +67,7 @@ Contains the raw dataset used throughout the project.
 
 **SCRIPTS/**  
 Contains all analysis code in a single RMarkdown file.
-- M2 — Performs data loading and cleaning, exploratory data analysis (10 plots), stationarity testing, preprocessing, SARIMA model selection and fitting, and forecast generation.
+- M2- Performs data loading and cleaning, exploratory data analysis (10 plots), stationarity testing, preprocessing, SARIMA model selection and fitting, and forecast generation.
 - M3- Performs the time seires analysis and displays the fine tuning and final results to our research question.
 
 **OUTPUT/**  
