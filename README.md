@@ -52,11 +52,9 @@ DS-4002-Project2/
 │
 ├── OUTPUT/
 │   └── tech_layoffs_M2_EDA.pdf
-│   └── ttech_layoffs_M3_Analysis.pdf
-│
-├── MILESTONES/
-│   ├── M1_Project_Proposal.docx  
-│   └── M2_EDA_Methods.docx       
+│   └── tech_layoffs_M3_Analysis.pdf
+│   └── M1-Project 2.pdf 
+│   └── M2-Project 2.pdf
 │
 └── README.md
 ```
