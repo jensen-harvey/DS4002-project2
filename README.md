@@ -62,7 +62,7 @@ DS-4002-Project2/
 ### Folder Descriptions
 
 **DATA/**  
-Contains the raw dataset used throughout the project.
+Contains the raw dataset used throughout the project, along with a data appendix. 
 - `Tech_layoffs.csv` — Original tech layoff dataset with company, industry, geography, date, layoff count, and percentage of workforce laid off. This file is **never manually modified**.
 
 **SCRIPTS/**  
