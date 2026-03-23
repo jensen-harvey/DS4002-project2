@@ -1,4 +1,4 @@
-# DS-4002-Project2
+# DS-4002-Project2 (NOT DONE NEEDS EDIT STILL)
 # Tech Layoff Forecasting (DS 4002 Project 2)
 
 This repository contains all parts of our data science project, where we used tech layoffs from the years 2020 to the present to **forecast global monthly tech layoffs** for the remainder of **2026 and 2027.**
